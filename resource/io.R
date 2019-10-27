@@ -155,6 +155,47 @@ WriteDatasetWithPartitioningColumn <- function(df, outputDatasetName) {
   dkuWriteDataset(df, outputDatasetName)
 }
 
+EKdkuManagedFolderCopyFromLocal = function (folder_id, source_base_path, partition_id = NULL) {
+    local_paths <- list.files(source_base_path, recursive = TRUE)
+    for (local_path in local_paths) {
+        print(paste("Uploading", local_path))
+        complete_path <- paste0(source_base_path, "/", local_path)
+        local_file <- file(complete_path, "rb")
+        data = readBin(local_file, file.info(complete_path)$size)
+        if(!is.null(partition_id)) {
+            local_path <- file.path(partition_id, local_path)
+        }
+        dkuManagedFolderUploadPath(folder_id, local_path, local_file)
+    }
+}
+
+
+EKdkuManagedFolderCopyToLocal=
+function (folder_id, local_base_path, partition_id = NULL) 
+{
+    #if (!dir.exists(local_base_path)) {
+    #    dir.create(local_base_path, recursive = TRUE)
+    #}
+    
+  
+    folder_paths <- dkuManagedFolderPartitionPaths(folder_id, partition_id) 
+    for (folder_path in folder_paths) {
+        dir_to_create=dirname(paste0(local_base_path, folder_path))
+        if(!dir.exists(dir_to_create)) {
+                dir.create(dir_to_create, recursive = TRUE)
+            }
+        local_path = paste0(local_base_path, folder_path)
+        local_file = file(local_path, "wb")
+        print(paste("Copying", folder_path, "to", local_path))
+        data = dkuManagedFolderDownloadPath(folder_id, folder_path, 
+            as = "raw")
+        writeBin(data, local_file)
+        close(local_file)
+    }
+    print("Done copying")
+}
+
+
 GetFolderPathWithPartitioning <- function(folderName) {
   # Gets path to the folder partition if partitioning is activated, else path to the whole folder.
   # This is needed to write to a specific folder partition, as there are no dataiku R method
@@ -200,39 +241,29 @@ SaveForecastingObjects <- function(folderName, versionName, ...) {
   # Returns:
   #   Nothing, simply writes RData file to folder
     
-    
+
  
   folderPath <- file.path(getwd(), "models")      
   versionPath <- file.path(folderPath, "versionsss", versionName) 
   dir.create(versionPath, recursive = TRUE)
   #saveRDS(...,  file = file.path(versionPath , "models.RDS"), ascii = FALSE, compress = FALSE, version = 2) #RData
   save(...,  file = file.path(versionPath , "models.RData"))
-  dkuManagedFolderCopyFromLocal(folderName, folderPath )
+  
+  outputFolderIsPartitioned <- dkuManagedFolderDirectoryBasedPartitioning(folderName)
+  partitionDimensionName <- GetPartitioningDimension()
+  partitioningIsActivated <- partitionDimensionName != ''
+  if (partitioningIsActivated && outputFolderIsPartitioned) {
+     EKdkuManagedFolderCopyFromLocal(folderName, folderPath, partition = dkuFlowVariable(paste0("DKU_DST_", partitionDimensionName))  )    
+    
+  } else if (partitioningIsActivated && ! outputFolderIsPartitioned) {
+    PrintPlugin("Partitioning should be activated on output folder", stop = TRUE)
+  } else {
+    EKdkuManagedFolderCopyFromLocal(folderName, folderPath  )
+    #PrintPlugin("No Partitioning detected")
+  }
  
 }
 
-EKdkuManagedFolderCopyToLocal=
-function (folder_id, local_base_path) 
-{
-    #if (!dir.exists(local_base_path)) {
-    #    dir.create(local_base_path, recursive = TRUE)
-    #}
-    folder_paths <- dkuManagedFolderPartitionPaths(folder_id)
-    for (folder_path in folder_paths) {
-        dir_to_create=dirname(paste0(local_base_path, folder_path))
-        if(!dir.exists(dir_to_create)) {
-                dir.create(dir_to_create, recursive = TRUE)
-            }
-        local_path = paste0(local_base_path, folder_path)
-        local_file = file(local_path, "wb")
-        print(paste("Copying", folder_path, "to", local_path))
-        data = dkuManagedFolderDownloadPath(folder_id, folder_path, 
-            as = "raw")
-        writeBin(data, local_file)
-        close(local_file)
-    }
-    print("Done copying")
-}
 
 LoadForecastingObjects <- function(folderName, versionName = NULL) {
   # Loads forecasting objects from the folder with saved forecasting objects
@@ -247,27 +278,26 @@ LoadForecastingObjects <- function(folderName, versionName = NULL) {
   # Returns:
   #   Nothing, simply loads RData file from folder to the global R environment
     
+    
+ 
   
   folderPath <- file.path(getwd(), "models")
+    
   PrintPlugin(paste0("local folderPathFull dir is ", folderPath)) 
   
   PrintPlugin(paste0("file list in working dir before copy ", list.files(folderPath))) 
     
-  EKdkuManagedFolderCopyToLocal(folderName, folderPath )
-    
-  PrintPlugin(paste0("file list in working dir after copy ", list.files(folderPath)))   
-    
-
-  #folderPath <- GetFolderPathWithPartitioning(folderName)
-    
-  #folderPath <- dkuManagedFolderPath(folderName)    
-  
-  if (is.null(versionName)) {
-    lastVersionPath <- max(list.dirs(file.path(folderPath, "versionsss"), recursive = FALSE))
+  outputFolderIsPartitioned <- dkuManagedFolderDirectoryBasedPartitioning(folderName)
+  partitionDimensionName <- GetPartitioningDimension()
+  partitioningIsActivated <- partitionDimensionName != ''
+  if (partitioningIsActivated && outputFolderIsPartitioned) {
+     EKdkuManagedFolderCopyToLocal(folderName, folderPath , partition = dkuFlowVariable(paste0("DKU_DST_", partitionDimensionName))  )
+       if (is.null(versionName)) {
+    lastVersionPath <- max(list.dirs(file.path(folderPath, dkuFlowVariable(paste0("DKU_DST_", partitionDimensionName)), "versionsss"), recursive = FALSE))
   } else {
-    lastVersionPath <- file.path(folderPath, "versionsss", versionName)
+    lastVersionPath <- file.path(folderPath, dkuFlowVariable(paste0("DKU_DST_", partitionDimensionName)), "versionsss", versionName)
   }
-  PrintPlugin(paste0("Loading forecasting objects from path ", lastVersionPath))
+  PrintPlugin(paste0("Loading forecasting objects from the path ", lastVersionPath))
   rdataPathList <- list.files(
     path = lastVersionPath,
     pattern = "*.RData",
@@ -281,4 +311,32 @@ LoadForecastingObjects <- function(folderName, versionName = NULL) {
     load(rdataPath, envir = .GlobalEnv)
     
   }
+    
+  } else if (partitioningIsActivated && ! outputFolderIsPartitioned) {
+    PrintPlugin("Partitioning should be activated on output folder", stop = TRUE)
+  } else {
+      #PrintPlugin("No Partitioning detected")
+    EKdkuManagedFolderCopyToLocal(folderName, folderPath)
+      
+       if (is.null(versionName)) {
+    lastVersionPath <- max(list.dirs(file.path(folderPath, "versionsss"), recursive = FALSE))
+  } else {
+    lastVersionPath <- file.path(folderPath, "versionsss", versionName)
+  }
+  PrintPlugin(paste0("Loading forecasting objects from the path ", lastVersionPath))
+  rdataPathList <- list.files(
+    path = lastVersionPath,
+    pattern = "*.RData",
+    full.names = TRUE,
+    recursive = TRUE
+  )
+  if (length(rdataPathList) == 0) {
+    PrintPlugin("No Rdata files found in the model folder", stop = TRUE)
+  }
+  for (rdataPath in rdataPathList) {
+    load(rdataPath, envir = .GlobalEnv)
+    
+  }
+  }  
+ 
 }
